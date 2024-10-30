@@ -12,6 +12,7 @@ from pathlib import Path, PosixPath
 import yaml
 from pytest import Collector
 
+from test.pylib.cpp.boost.boost_facade import COMBINED_TESTS
 from test.pylib.cpp.facade import CppTestFacade
 from test.pylib.cpp.item import CppFile
 from test.pylib.util import get_modes_to_run
@@ -111,7 +112,7 @@ def collect_items(file_path: PosixPath, parent: Collector, facade: CppTestFacade
 @cache
 def get_combined_tests(session):
     suites = collections.defaultdict()
-    executable = get_root_path(session) / 'combined_tests'
+    executable = get_root_path(session) / COMBINED_TESTS
     args = [executable, '--list_content']
 
     output = subprocess.check_output(
