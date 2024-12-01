@@ -98,6 +98,7 @@ client::client(std::string host, endpoint_config_ptr cfg, semaphore& mem, global
         .add_credentials_provider(std::make_unique<aws::environment_aws_credentials_provider>())
         .add_credentials_provider(std::make_unique<aws::sts_assume_role_credentials_provider>(_cfg->region, _cfg->role_arn.value_or("")))
         .add_credentials_provider(std::make_unique<aws::instance_profile_credentials_provider>());
+    s3l.info("S3 client memory: {}", _memory.available_units());
 }
 
 void client::update_config(endpoint_config_ptr cfg) {
@@ -243,7 +244,8 @@ client::group_client& client::find_or_create_client() {
         // Limit the maximum number of connections this group's http client
         // may have proportional to its shares. Shares are typically in the
         // range of 100...1000, thus resulting in 1..10 connections
-        auto max_connections = std::max((unsigned)(sg.get_shares() / 100), 1u);
+        auto max_connections = 10;
+        s3l.info("Max S3 client connections: {}", max_connections);
         it = _https.emplace(std::piecewise_construct,
             std::forward_as_tuple(sg),
             std::forward_as_tuple(std::move(factory), max_connections, *_retry_strategy)
@@ -1145,6 +1147,7 @@ public:
         // parallel to improve throughput
         if (file_size > aws_minimum_part_size) {
             auto [num_parts, part_size] = calc_part_size(file_size, _part_size);
+            s3l.info("S3 part size is set to {} bytes", part_size);
             _part_etags.reserve(num_parts);
             co_await multi_part_upload(std::move(f), file_size, part_size);
         } else {

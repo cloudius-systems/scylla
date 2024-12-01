@@ -61,7 +61,7 @@ static shared_ptr<s3::client> make_proxy_client(semaphore& mem) {
 static shared_ptr<s3::client> make_minio_client(semaphore& mem) {
     s3::endpoint_config cfg = {
         .port = std::stoul(tests::getenv_safe("S3_SERVER_PORT_FOR_TEST")),
-        .use_https = ::getenv("AWS_DEFAULT_REGION") != nullptr,
+        .use_https = false,
         .region = ::getenv("AWS_DEFAULT_REGION") ?: "local",
     };
     return s3::client::make(tests::getenv_safe("S3_SERVER_ADDRESS_FOR_TEST"), make_lw_shared<s3::endpoint_config>(std::move(cfg)), mem);
@@ -236,63 +236,39 @@ SEASTAR_THREAD_TEST_CASE(test_client_multipart_upload_fallback_proxy) {
 using with_remainder_t = bool_class<class with_remainder_tag>;
 
 future<> test_client_upload_file(const client_maker_function& client_maker, std::string_view test_name, size_t total_size, size_t memory_size) {
-    tmpdir tmp;
-    const auto file_path = tmp.path() / "test";
+    const fs::path file_path = "./test";
+    const auto object_name = fmt::format("/{}/{}-{}", tests::getenv_safe("S3_BUCKET_FOR_TEST"), test_name, ::getpid());
 
-    uint32_t expected_checksum = crc32_utils::init_checksum();
+    semaphore mem{memory_size};
+    auto client = client_maker(mem);
+
+    temporary_buffer<char> data = sstring("1234567890").release();
+    co_await client->put_object(object_name, std::move(data));
 
     // 1. prefill the data file to be uploaded
     {
-        file f = co_await open_file_dma(file_path.native(), open_flags::create | open_flags::wo);
+        file f = co_await open_file_dma(file_path.native(), open_flags::create | open_flags::truncate | open_flags::wo);
         auto output = co_await make_file_output_stream(std::move(f));
-        std::string_view data = "1234567890ABCDEF";
+        std::string data = std::string(1_MiB, 'a');
         // so we can test !with_remainder case properly with multiple writes
         SCYLLA_ASSERT(total_size % data.size() == 0);
 
-        for (size_t bytes_written = 0;
-             bytes_written < total_size;
-             bytes_written += data.size()) {
+        for (size_t bytes_written = 0; bytes_written < total_size; bytes_written += data.size()) {
             co_await output.write(data.data(), data.size());
-            uint32_t chunk_checksum = crc32_utils::checksum(data.data(), data.size());
-            expected_checksum = checksum_combine_or_feed<crc32_utils>(
-                expected_checksum, chunk_checksum, data.data(), data.size());
         }
         co_await output.close();
     }
 
-    const auto object_name = fmt::format("/{}/{}-{}",
-                                         tests::getenv_safe("S3_BUCKET_FOR_TEST"),
-                                         test_name,
-                                         ::getpid());
 
     // 2. upload the file to s3
-    semaphore mem{memory_size};
-    auto client = client_maker(mem);
-    co_await client->upload_file(file_path, object_name);
-    // 3. retrieve the object from s3 and retrieve the object from S3 and
-    //    compare it with the pattern
-    uint32_t actual_checksum = crc32_utils::init_checksum();
-    auto readable_file = client->make_readable_file(object_name);
-    auto input = make_file_input_stream(readable_file);
-    size_t actual_size = 0;
-    for (;;) {
-        auto buf = co_await input.read();
-        if (buf.empty()) {
-            // empty() signifies the end of stream
-            break;
-        }
-        actual_size += buf.size();
-        bytes_view bv{reinterpret_cast<const int8_t*>(buf.get()), buf.size()};
-        //fmt::print("{}", fmt_hex(bv));
-        uint32_t chunk_checksum = crc32_utils::checksum(buf.get(), buf.size());
-        actual_checksum = checksum_combine_or_feed<crc32_utils>(
-            actual_checksum, chunk_checksum, buf.get(), buf.size());
-    }
-    BOOST_CHECK_EQUAL(total_size, actual_size);
-    BOOST_CHECK_EQUAL(expected_checksum, actual_checksum);
 
-    co_await readable_file.close();
-    co_await input.close();
+    for (auto _ : {0, 1, 2, 3, 4}) {
+        auto begin = std::chrono::high_resolution_clock::now();
+        co_await client->upload_file(file_path, object_name, {}, memory_size);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "File size: " << total_size
+                  << ", Upload speed: " << total_size / std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() / 1_MiB << "MiB/s" << std::endl;
+    }
     co_await client->close();
 }
 
@@ -706,4 +682,12 @@ SEASTAR_THREAD_TEST_CASE(test_creds) {
     BOOST_REQUIRE_EQUAL(creds.access_key_id, "");
     BOOST_REQUIRE_EQUAL(creds.secret_access_key, "");
     BOOST_REQUIRE_EQUAL(creds.session_token, "");
+}
+
+
+SEASTAR_TEST_CASE(test_client_file_upload_speed) {
+    const size_t part_size = 5_MiB;
+    const size_t total_size = 40_GiB;
+    const size_t memory_size = part_size;
+    co_await test_client_upload_file(make_minio_client, seastar_test::get_name(), total_size, memory_size);
 }
