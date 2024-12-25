@@ -4,9 +4,16 @@ Nodetool restore
 
 **restore** - Load SSTables from a designated bucket in object store into a specified keyspace or table
 
-Note that status of restore can be checked for ``user_task_ttl`` seconds after the operation is done.
-You can set the ttl using :doc:`nodetool tasks user-ttl </operating-scylla/nodetool-commands/tasks/user-ttl>`.
-If ``--nowait`` flag is not set, the command relies on ``user_task_ttl`` internally.
+The status of a restore operation is retained for a period defined by ``user_task_ttl``,
+allowing you to query the status even after the operation completes.
+You can configure the TTL duration using the :doc:`nodetool tasks user-ttl </operating-scylla/nodetool-commands/tasks/user-ttl>` command.
+
+To run the command asynchronously, use the ``--nowait`` flag. The command will then print a task ID.
+You can use this ID with :doc:`nodetool tasks </operating-scylla/nodetool-commands/tasks/index>` command to track the progress of the restore operation or
+to cancel it.
+
+To run the command synchronously, run it without the ``--nowait`` flag. In this case,
+the command relies on ``user_task_ttl`` internally.
 
 Syntax
 ------
@@ -42,7 +49,7 @@ Options
 * ``--prefix`` - The share prefix for object keys of backed up SSTables
 * ``--keyspace`` - Name of the keyspace to load SSTables into
 * ``--table`` - Name of the table to load SSTables into
-* ``--nowait`` - Don't wait on the restore process
+* ``--nowait`` - Returns immediately without waiting for the restore operation to complete.
 * ``<sstables>`` - Remainder of keys of the TOC (Table of Contents) components of SSTables to restore, relative to the specified prefix
 
 See also
