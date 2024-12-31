@@ -31,7 +31,7 @@ enum class schema_feature {
     // Unused.  Defined for backward compatibility only
     IN_MEMORY_TABLES,
 
-    // Pre-table tablet options
+    // Per-table tablet options
     TABLET_OPTIONS,
 };
 
