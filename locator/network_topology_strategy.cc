@@ -311,7 +311,7 @@ static future<unsigned> calculate_initial_tablets_from_topology(const schema& s,
     unsigned initial_tablets = std::numeric_limits<unsigned>::min();
     std::unordered_map<sstring, unsigned> shards_per_dc_map;
     tm->get_topology().for_each_node([&] (const node& n) {
-        if (tm->is_normal_token_owner(n.host_id())) {
+        if (n.is_normal() && tm->is_normal_token_owner(n.host_id())) {
             shards_per_dc_map[n.dc_rack().dc] += n.get_shard_count();
         }
     });
