@@ -1087,7 +1087,8 @@ public:
                 const auto& erm = t->get_effective_replication_map();
                 if (const auto* rs = erm->get_replication_strategy().maybe_as_tablet_aware()) {
                     size_desc.min_tablet_count = std::max<size_t>(size_desc.min_tablet_count,
-                            rs->calculate_min_tablet_count(t->schema(), erm->get_token_metadata_ptr(), size_desc.target_tablet_size, initial_scale));
+                            co_await rs->calculate_min_tablet_count(t->schema(), erm->get_token_metadata_ptr(),
+                                    size_desc.target_tablet_size, initial_scale));
                 } else {
                     auto msg = format("Table {}.{} has no tablet_aware_replication_strategy: uses_tablets={}", t->schema()->ks_name(), t->schema()->cf_name(), erm->get_replication_strategy().uses_tablets());
                     if (!test_mode) {
