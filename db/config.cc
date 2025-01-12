@@ -1388,7 +1388,7 @@ db::config::config(std::shared_ptr<db::extensions> exts)
     , enable_tablets(this, "enable_tablets", value_status::Used, tablets_mode_t::mode::disabled, "Enable tablets for newly created keyspaces.  Can be false or true:\n"
             "\tfalse: New keyspaces use vnodes by default, unless enabled by the tablets={'enabled':true} option\n"
             "\ttrue:  New keyspaces use tablets by default, unless disabled by the tablets={'disabled':true} option\n"
-            )
+            "\tforce: New keyspaces must use tablets. Tablets cannot be disabled using the CREATE KEYSPACE option")
     , view_flow_control_delay_limit_in_ms(this, "view_flow_control_delay_limit_in_ms", liveness::LiveUpdate, value_status::Used, 1000,
         "The maximal amount of time that materialized-view update flow control may delay responses "
         "to try to slow down the client and prevent buildup of unfinished view updates. "
@@ -1620,7 +1620,7 @@ std::unordered_map<sstring, db::tablets_mode_t::mode> db::tablets_mode_t::map() 
             {"true", db::tablets_mode_t::mode::enabled},
             {"yes", db::tablets_mode_t::mode::enabled},
             {"1", db::tablets_mode_t::mode::enabled},
-            };
+            {"force", db::tablets_mode_t::mode::enforced}};
 }
 
 template struct utils::config_file::named_value<seastar::log_level>;

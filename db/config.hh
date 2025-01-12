@@ -131,7 +131,7 @@ struct replication_strategy_restriction_t {
 constexpr unsigned default_murmur3_partitioner_ignore_msb_bits = 12;
 
 struct tablets_mode_t {
-    enum class mode { disabled, enabled };
+    enum class mode { disabled, enabled, enforced };
     static std::unordered_map<sstring, mode> map(); // for enum_option<>
 };
 
@@ -535,6 +535,9 @@ public:
 
     bool enable_tablets_by_default() const noexcept {
         return enable_tablets() != tablets_mode_t::mode::disabled;
+    }
+    bool enforce_tablets() const noexcept {
+        return enable_tablets() == tablets_mode_t::mode::enforced;
     }
 
     named_value<uint32_t> view_flow_control_delay_limit_in_ms;
