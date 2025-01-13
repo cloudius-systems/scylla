@@ -123,13 +123,6 @@ const column_definition* view_info::view_column(const column_definition& base_de
     return _schema.get_column_definition(base_def.name());
 }
 
-void view_info::set_base_info(db::view::base_info_ptr base_info) {
-    _base_info = std::move(base_info);
-    // Forget the cached objects which may refer to the base schema.
-    _select_statement = nullptr;
-    _partition_slice = std::nullopt;
-}
-
 // A constructor for a base info that can facilitate reads and writes from the materialized view.
 db::view::base_dependent_view_info::base_dependent_view_info(schema_ptr base_schema,
         std::vector<column_id>&& base_regular_columns_in_view_pk,
@@ -2105,10 +2098,10 @@ view_builder::build_step& view_builder::get_or_create_build_step(table_id base_i
 
 future<> view_builder::initialize_reader_at_current_token(build_step& step) {
   return step.reader.close().then([this, &step] {
-    step.pslice = make_partition_slice(*step.base->schema());
+    step.pslice = make_partition_slice(*step.base_schema);
     step.prange = dht::partition_range(dht::ring_position::starting_at(step.current_token()), dht::ring_position::max());
     step.reader = step.base->get_sstable_set().make_local_shard_sstable_reader(
-            step.base->schema(),
+            step.base_schema,
             _permit,
             step.prange,
             step.pslice,
@@ -2597,13 +2590,13 @@ future<> view_builder::do_build_step() {
             } catch (...) {
                 ++_current_step->second.base->cf_stats()->view_building_paused;
                 ++_stats.steps_failed;
-                auto base = _current_step->second.base->schema();
+                auto base = _current_step->second.base_schema;
                 vlogger.warn("Error executing build step for base {}.{}: {}", base->ks_name(), base->cf_name(), std::current_exception());
                 r.retry(_as).get();
                 initialize_reader_at_current_token(_current_step->second).get();
             }
             if (_current_step->second.build_status.empty()) {
-                auto base = _current_step->second.base->schema();
+                auto base = _current_step->second.base_schema;
                 auto reader = std::move(_current_step->second.reader);
                 _current_step = _base_to_build_step.erase(_current_step);
                 reader.close().get();
@@ -2986,11 +2979,9 @@ public:
         _builder._as.check();
         if (!_fragments.empty()) {
             _fragments.emplace_front(*_step.reader.schema(), _builder._permit, partition_start(_step.current_key, tombstone()));
-            auto base_schema = _step.base->schema();
             auto views = with_base_info_snapshot(_views_to_build);
             auto reader = make_mutation_reader_from_fragments(_step.reader.schema(), _builder._permit, std::move(_fragments));
             auto close_reader = defer([&reader] { reader.close().get(); });
-            reader.upgrade_schema(base_schema);
             _gen->populate_views(
                     *_step.base,
                     std::move(views),
@@ -3016,8 +3007,8 @@ public:
             auto view_names = _views_to_build | std::views::transform([](auto v) {
                         return v->cf_name();
                     }) | std::ranges::to<std::vector<sstring>>();
-            vlogger.debug("Completed build step for base {}.{}, at token {}; views={}", _step.base->schema()->ks_name(),
-                          _step.base->schema()->cf_name(), _step.current_token(), view_names);
+            vlogger.debug("Completed build step for base {}.{}, at token {}; views={}", _step.base_schema->ks_name(),
+                          _step.base_schema->cf_name(), _step.current_token(), view_names);
         }
         if (_step.reader.is_end_of_stream() && _step.reader.is_buffer_empty()) {
             if (_step.current_key.key().is_empty()) {
