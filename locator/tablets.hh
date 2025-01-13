@@ -312,9 +312,15 @@ enum tablet_range_side {
 // The decision of whether tablets of a given should be split, merged, or none, is made
 // by the load balancer. This decision is recorded in the tablet_map and stored in group0.
 struct resize_decision {
-    struct none {};
-    struct split {};
-    struct merge {};
+    struct none {
+        auto operator<=>(const none&) const = default;
+    };
+    struct split {
+        auto operator<=>(const split&) const = default;
+    };
+    struct merge {
+        auto operator<=>(const merge&) const = default;
+    };
 
     using seq_number_t = int64_t;
 
