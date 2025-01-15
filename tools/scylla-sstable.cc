@@ -3183,7 +3183,6 @@ $ scylla sstable validate /path/to/md-123456-big-Data.db /path/to/md-123457-big-
     tool_app_template app(std::move(app_cfg));
 
     return app.run_async(argc, argv, [&app] (const operation& operation, const bpo::variables_map& app_config) {
-        logging::logger_registry().set_all_loggers_level(seastar::log_level::debug);
         schema_ptr schema;
         std::optional<schema_with_source> schema_with_source;
 
