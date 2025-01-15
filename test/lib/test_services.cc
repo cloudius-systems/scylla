@@ -168,13 +168,13 @@ void table_for_tests::set_tombstone_gc_enabled(bool tombstone_gc_enabled) noexce
 
 namespace sstables {
 
-std::unordered_map<sstring, s3::endpoint_config> make_storage_options_config(const data_dictionary::storage_options& so) {
-    std::unordered_map<sstring, s3::endpoint_config> cfg;
+std::unordered_map<sstring, aws::s3::endpoint_config> make_storage_options_config(const data_dictionary::storage_options& so) {
+    std::unordered_map<sstring, aws::s3::endpoint_config> cfg;
     std::visit(overloaded_functor {
         [] (const data_dictionary::storage_options::local& loc) mutable -> void {
         },
         [&cfg] (const data_dictionary::storage_options::s3& os) mutable -> void {
-            cfg[os.endpoint] = s3::endpoint_config {
+            cfg[os.endpoint] = aws::s3::endpoint_config {
                 .port = std::stoul(tests::getenv_safe("S3_SERVER_PORT_FOR_TEST")),
                 .use_https = ::getenv("AWS_DEFAULT_REGION") != nullptr,
                 .region = ::getenv("AWS_DEFAULT_REGION") ? : "local",

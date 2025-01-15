@@ -56,8 +56,8 @@ class client : public enable_shared_from_this<client> {
     class do_upload_file;
     class readable_file;
     std::string _host;
-    endpoint_config_ptr _cfg;
-    aws_credentials _credentials;
+    aws::s3::endpoint_config_ptr _cfg;
+    aws::s3::aws_credentials _credentials;
     aws::aws_credentials_provider_chain _creds_provider_chain;
 
     struct io_stats {
@@ -97,8 +97,8 @@ class client : public enable_shared_from_this<client> {
     future<> get_object_header(sstring object_name, http::experimental::client::reply_handler handler, seastar::abort_source* = nullptr);
 public:
 
-    client(std::string host, endpoint_config_ptr cfg, semaphore& mem, global_factory gf, private_tag, std::unique_ptr<aws::retry_strategy> rs = std::make_unique<aws::default_retry_strategy>());
-    static shared_ptr<client> make(std::string endpoint, endpoint_config_ptr cfg, semaphore& memory, global_factory gf = {});
+    client(std::string host, aws::s3::endpoint_config_ptr cfg, semaphore& mem, global_factory gf, private_tag, std::unique_ptr<aws::retry_strategy> rs = std::make_unique<aws::default_retry_strategy>());
+    static shared_ptr<client> make(std::string endpoint, aws::s3::endpoint_config_ptr cfg, semaphore& memory, global_factory gf = {});
 
     future<uint64_t> get_object_size(sstring object_name, seastar::abort_source* = nullptr);
     future<stats> get_object_stats(sstring object_name, seastar::abort_source* = nullptr);
@@ -129,7 +129,7 @@ public:
                          upload_progress& up,
                          seastar::abort_source* = nullptr);
 
-    void update_config(endpoint_config_ptr);
+    void update_config(aws::s3::endpoint_config_ptr);
 
     struct handle {
         std::string _host;

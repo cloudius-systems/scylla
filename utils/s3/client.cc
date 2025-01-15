@@ -86,7 +86,7 @@ future<> ignore_reply(const http::reply& rep, input_stream<char>&& in_) {
     co_await util::skip_entire_stream(in);
 }
 
-client::client(std::string host, endpoint_config_ptr cfg, semaphore& mem, global_factory gf, private_tag, std::unique_ptr<aws::retry_strategy> rs)
+client::client(std::string host, aws::s3::endpoint_config_ptr cfg, semaphore& mem, global_factory gf, private_tag, std::unique_ptr<aws::retry_strategy> rs)
         : _host(std::move(host))
         , _cfg(std::move(cfg))
         , _gf(std::move(gf))
@@ -99,7 +99,7 @@ client::client(std::string host, endpoint_config_ptr cfg, semaphore& mem, global
         .add_credentials_provider(std::make_unique<aws::instance_profile_credentials_provider>());
 }
 
-void client::update_config(endpoint_config_ptr cfg) {
+void client::update_config(aws::s3::endpoint_config_ptr cfg) {
     if (_cfg->port != cfg->port || _cfg->use_https != cfg->use_https) {
         throw std::runtime_error("Updating port and/or https usage is not possible");
     }
@@ -107,7 +107,7 @@ void client::update_config(endpoint_config_ptr cfg) {
     _credentials = {};
 }
 
-shared_ptr<client> client::make(std::string endpoint, endpoint_config_ptr cfg, semaphore& mem, global_factory gf) {
+shared_ptr<client> client::make(std::string endpoint, aws::s3::endpoint_config_ptr cfg, semaphore& mem, global_factory gf) {
     return seastar::make_shared<client>(std::move(endpoint), std::move(cfg), mem, std::move(gf), private_tag{});
 }
 

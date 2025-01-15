@@ -12,7 +12,7 @@
 #include <optional>
 #include <seastar/core/shared_ptr.hh>
 
-namespace s3 {
+namespace aws::s3 {
 
 struct endpoint_config {
     unsigned port;
