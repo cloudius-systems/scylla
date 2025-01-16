@@ -50,21 +50,21 @@ using namespace std::string_view_literals;
 //   export AWS_DEFAULT_REGION="us-east-2"
 
 static shared_ptr<s3::client> make_proxy_client(semaphore& mem) {
-    s3::endpoint_config cfg = {
+    aws::s3::endpoint_config cfg = {
         .port = std::stoul(tests::getenv_safe("PROXY_S3_SERVER_PORT")),
         .use_https = false,
         .region = ::getenv("AWS_DEFAULT_REGION") ?: "local",
     };
-    return s3::client::make(tests::getenv_safe("PROXY_S3_SERVER_HOST"), make_lw_shared<s3::endpoint_config>(std::move(cfg)), mem);
+    return s3::client::make(tests::getenv_safe("PROXY_S3_SERVER_HOST"), make_lw_shared<aws::s3::endpoint_config>(std::move(cfg)), mem);
 }
 
 static shared_ptr<s3::client> make_minio_client(semaphore& mem) {
-    s3::endpoint_config cfg = {
+    aws::s3::endpoint_config cfg = {
         .port = std::stoul(tests::getenv_safe("S3_SERVER_PORT_FOR_TEST")),
         .use_https = ::getenv("AWS_DEFAULT_REGION") != nullptr,
         .region = ::getenv("AWS_DEFAULT_REGION") ?: "local",
     };
-    return s3::client::make(tests::getenv_safe("S3_SERVER_ADDRESS_FOR_TEST"), make_lw_shared<s3::endpoint_config>(std::move(cfg)), mem);
+    return s3::client::make(tests::getenv_safe("S3_SERVER_ADDRESS_FOR_TEST"), make_lw_shared<aws::s3::endpoint_config>(std::move(cfg)), mem);
 }
 
 using client_maker_function = std::function<shared_ptr<s3::client>(semaphore&)>;
