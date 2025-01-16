@@ -28,13 +28,13 @@ class tester {
     utils::estimated_histogram _reads_hist;
     unsigned _errors = 0;
 
-    static s3::endpoint_config_ptr make_config() {
-        s3::endpoint_config cfg;
+    static aws::s3::endpoint_config_ptr make_config() {
+        aws::s3::endpoint_config cfg;
         cfg.port = 443;
         cfg.use_https = true;
         cfg.region = tests::getenv_safe("AWS_DEFAULT_REGION");
 
-        return make_lw_shared<s3::endpoint_config>(std::move(cfg));
+        return make_lw_shared<aws::s3::endpoint_config>(std::move(cfg));
     }
 
     static constexpr unsigned chunk_size = 1000;
