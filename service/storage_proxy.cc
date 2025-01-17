@@ -1096,13 +1096,27 @@ private:
         while (true) {
             group0_guard guard = co_await _group0_client.start_operation(_group0_as, raft_timeout{});
 
-            if (_topology_state_machine._topology.global_request.has_value()) {
+            const table_id table_id = _sp.local_db().find_uuid(ks_name, cf_name);
+
+            std::optional<global_topology_request>& global_request = _topology_state_machine._topology.global_request;
+            if (global_request.has_value()) {
+                // Check if we already have a truncate running for the same table. This can happen when a truncate has timed out
+                // and the client retried by issuing the same truncate again. In this case, instead of failing the request with
+                // an "Another global topology request is ongoing" error, we can wait for the already running request to complete.
+                if (*global_request == global_topology_request::truncate_table) {
+                    const utils::UUID& ongoing_global_request_id = *_topology_state_machine._topology.global_request_id;
+                    const auto topology_requests_entry = co_await _sys_ks.local().get_topology_request_entry(ongoing_global_request_id, true);
+                    if (topology_requests_entry.truncate_table_id == table_id) {
+                        global_request_id = ongoing_global_request_id;
+                        slogger.info("Ongoing TRUNCATE for table {}.{} (global request ID {}) detected; waiting for it to complete",
+                                            ks_name, cf_name, global_request_id);
+                        break;
+                    }
+                }
                 throw exceptions::invalid_request_exception("Another global topology request is ongoing, please retry.");
             }
 
             global_request_id = guard.new_group0_state_id();
-
-            const table_id table_id = _sp.local_db().find_uuid(ks_name, cf_name);
 
             std::vector<canonical_mutation> updates;
             updates.emplace_back(topology_mutation_builder(guard.write_timestamp())
