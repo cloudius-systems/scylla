@@ -54,3 +54,26 @@ async def test_start_scylla_with_view_building_disabled(manager: ManagerClient):
     log = await manager.server_open_log(server.server_id)
     res = await log.grep(r"ERROR.*\[shard [0-9]+:[a-z]+\]")
     assert len(res) == 0
+
+# While view building is in progress, drop the view and change the schema
+# of the base table. The view table's state may become inconsistent with
+# the base table because they are detached.
+@pytest.mark.asyncio
+async def test_view_building_during_drop_view(manager: ManagerClient):
+    server = await manager.server_add()
+    cql = manager.get_cql()
+    await manager.api.enable_injection(server.ip_addr, "view_builder_consume_end_of_partition_delay_3s", one_shot=True)
+
+    await cql.run_async(f"CREATE KEYSPACE ks WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}}")
+    await cql.run_async(f"CREATE TABLE ks.tab (p int, c int, PRIMARY KEY (p, c))")
+    await cql.run_async("INSERT INTO ks.tab (p,c) VALUES (123, 1000)")
+
+    await cql.run_async("CREATE INDEX idx1 ON ks.tab (c)")
+    # wait for view building to start
+    await asyncio.sleep(1)
+
+    # while view building is delayed, we drop the view and change the schema of the base table
+    await cql.run_async("DROP INDEX ks.idx1")
+    await asyncio.sleep(5)
+
+    await cql.run_async("DROP TABLE ks.tab")
