@@ -2095,7 +2095,7 @@ view_builder::build_step& view_builder::get_or_create_build_step(table_id base_i
     auto it = _base_to_build_step.find(base_id);
     if (it == _base_to_build_step.end()) {
         auto base = _db.find_column_family(base_id).shared_from_this();
-        auto p = _base_to_build_step.emplace(base_id, build_step{base, make_partition_slice(*base->schema())});
+        auto p = _base_to_build_step.emplace(base_id, build_step{base, base->schema(), make_partition_slice(*base->schema())});
         // Iterators could have been invalidated if there was rehashing, so just reset the cursor.
         _current_step = p.first;
         it = p.first;
@@ -2457,6 +2457,47 @@ static future<> flush_base(lw_shared_ptr<replica::column_family> base, abort_sou
             return { empty_state{} };
         });
     }).discard_result();
+}
+
+void view_builder::on_update_column_family(const sstring& ks_name, const sstring& cf_name, bool columns_changed) {
+    // Do it in the background, serialized.
+    (void)with_semaphore(_sem, 1, [ks_name, cf_name, this] {
+        auto& base_cf = _db.find_column_family(ks_name, cf_name);
+        auto base_schema = base_cf.schema();
+        auto& views = base_cf.views();
+        if (views.empty()) {
+            return;
+        }
+        auto step_it = _base_to_build_step.find(base_schema->id());
+        if (step_it == _base_to_build_step.end()) {
+            return;// In case all the views for this CF have finished building already.
+        }
+        // Update view_ptrs in all build statuses with new view_ptr from the base table.
+        // If some were dropped, stop them as well, so we won't continue building them,
+        // especially as their schema is not updated with the new base schema.
+        // If some were added, we can handle them later, in on_create_view.
+        std::vector<view_ptr> views_to_remove;
+        for (auto& status : step_it->second.build_status) {
+            auto view_it = std::ranges::find_if(views, [&status] (const view_ptr& v) {
+                return v->id() == status.view->id();
+            });
+            if (view_it == views.end()) {
+                views_to_remove.push_back(status.view);
+            } else {
+                // This update will be performed again in on_create_view, but it will set the same
+                // view_ptr, and it's still needed there because not all view schema updates are
+                // caused by base schema updates.
+                status.view = *view_it;
+            }
+        }
+        for (auto& view : views_to_remove) {
+            _built_views.erase(view->id());
+            step_it->second.build_status.erase(std::ranges::find_if(step_it->second.build_status, [&view] (const view_build_status& bs) {
+                return bs.view->id() == view->id();
+            }));
+            // The cleanup operations will be done in on_drop_view.
+        }
+    }).handle_exception_type([] (replica::no_such_column_family&) { });
 }
 
 void view_builder::on_create_view(const sstring& ks_name, const sstring& view_name) {
