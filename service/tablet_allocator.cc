@@ -480,21 +480,23 @@ class load_balancer {
     // due to the average size dropping below the merge threshold, as tablet count doubles.
     const uint64_t _target_tablet_size = default_target_tablet_size;
 
+    const unsigned _tablets_per_shard_goal;
+
+    uint64_t target_max_tablet_size() const noexcept {
+        return _target_tablet_size * 2;
+    }
+
+    uint64_t target_min_tablet_size() const noexcept {
+        return _target_tablet_size / 2;
+    }
+
     struct table_size_desc {
         uint64_t target_tablet_size;
         uint64_t avg_tablet_size;
         locator::resize_decision resize_decision;
+        locator::resize_decision new_resize_decision;
         size_t tablet_count;
         size_t shard_count;
-        size_t min_tablet_count;
-
-        uint64_t target_max_tablet_size() const noexcept {
-            return target_tablet_size * 2;
-        }
-
-        uint64_t target_min_tablet_size() const noexcept {
-            return target_tablet_size / 2;
-        }
     };
 
     struct cluster_resize_load {
@@ -503,26 +505,7 @@ class load_balancer {
         std::vector<table_id_and_size_desc> tables_being_resized;
 
         static locator::resize_decision to_resize_decision(const table_size_desc& d) {
-            locator::resize_decision decision;
-
-            auto tablet_count_from_size = d.tablet_count;
-            if (d.avg_tablet_size < d.target_min_tablet_size()) {
-                tablet_count_from_size /= 2;
-            } else if (d.avg_tablet_size > d.target_max_tablet_size()) {
-                tablet_count_from_size *= 2;
-            }
-
-            auto target_tablet_count = std::max(d.min_tablet_count, tablet_count_from_size);
-
-            if (d.tablet_count >= 2 * target_tablet_count) {
-                decision.way = resize_decision::merge{};
-            } else if (d.tablet_count < target_tablet_count) {
-                decision.way = resize_decision::split{};
-            }
-
-            lblogger.debug("to_resize_decision: tablet_count={}, avg_tablet_size={}, min_tablet_count={}, target_tablet_count={}: decision={}",
-                           d.tablet_count, d.avg_tablet_size, d.min_tablet_count, target_tablet_count, decision.type_name());
-            return decision;
+            return d.new_resize_decision;
         }
 
         bool table_needs_resize(const table_size_desc& d) const {
@@ -1058,49 +1041,76 @@ public:
         co_return std::move(plan);
     }
 
-    future<table_resize_plan> make_resize_plan(const migration_plan& plan) {
-        table_resize_plan resize_plan;
+    struct table_sizing {
+        size_t current_tablet_count; // Tablet count in group0.
+        size_t target_tablet_count; // Tablet count wanted by scheduler.
+        std::optional<uint64_t> avg_tablet_size; // nullptr when stats not yet available.
 
-        if (!_tm->tablets().balancing_enabled()) {
-            co_return std::move(resize_plan);
-        }
+        size_t target_tablet_count_aligned; // target_tablet_count aligned to power of 2.
+        resize_decision::way_type resize_decision; // Decision which should be emitted to achieve target_tablet_count_aligned.
+    };
 
-        cluster_resize_load resize_load;
+    struct sizing_plan {
+        std::unordered_map<table_id, table_sizing> tables;
+    };
 
-        for (auto&& [table, tmap_] : _tm->tablets().all_tables()) {
-            auto& tmap = *tmap_;
+    future<sizing_plan> make_sizing_plan() {
+        sizing_plan plan;
 
-            const auto* table_stats = load_stats_for_table(table);
-            if (!table_stats) {
-                continue;
+        auto process_table = [&] (table_id table, schema_ptr s, const tablet_aware_replication_strategy* rs, size_t tablet_count) -> future<> {
+            table_sizing& table_plan = plan.tables[table];
+            table_plan.current_tablet_count = tablet_count;
+
+            size_t target_tablet_count = 1;
+
+            if (rs) {
+                target_tablet_count = std::max<size_t>(target_tablet_count,
+                        co_await rs->calculate_min_tablet_count(s, _tm, _target_tablet_size, _initial_scale));
             }
 
-            auto avg_tablet_size = table_stats->size_in_bytes / std::max(tmap.tablet_count(), size_t(1));
-            // shard presence of a table across the cluster
-            size_t shard_count = std::accumulate(tmap.tablets().begin(), tmap.tablets().end(), size_t(0),
-                [] (size_t shard_count, const locator::tablet_info& info) {
-                    return shard_count + info.replicas.size();
-                });
+            // The block below establishes table_plan.target_tablet_count
 
-            table_size_desc size_desc {
-                .target_tablet_size = _target_tablet_size,
-                .avg_tablet_size = avg_tablet_size,
-                .resize_decision = tmap.resize_decision(),
-                .tablet_count = tmap.tablet_count(),
-                .shard_count = shard_count,
-                .min_tablet_count = 1,
-            };
+            const auto* table_stats = load_stats_for_table(table);
+            if (table_stats) {
+                auto avg_tablet_size = table_stats->size_in_bytes / std::max<size_t>(table_plan.current_tablet_count, 1);
+                auto tablet_count_from_size = table_plan.current_tablet_count;
+                if (avg_tablet_size < target_min_tablet_size()) {
+                    tablet_count_from_size /= 2;
+                } else if (avg_tablet_size > target_max_tablet_size()) {
+                    tablet_count_from_size *= 2;
+                }
+                table_plan.avg_tablet_size = avg_tablet_size;
+                table_plan.target_tablet_count = std::max(target_tablet_count, tablet_count_from_size);
+            } else {
+                // When we don't have tablet size info, allow tablet count to increase but not to decrease.
+                // Increasing will always bring us closer to the true target count, since tablet_count_from_size
+                // can only increase the count above it, but decreasing may go against the true target count
+                // if tablet_count_from_size would demand more tablets.
+                table_plan.target_tablet_count = std::max(target_tablet_count, table_plan.current_tablet_count);
+            }
+
+            table_plan.target_tablet_count_aligned = 1u << log2ceil(table_plan.target_tablet_count);
+
+            if (table_plan.target_tablet_count_aligned > table_plan.current_tablet_count) {
+                table_plan.resize_decision = locator::resize_decision::split();
+            } else if (table_plan.target_tablet_count_aligned < table_plan.current_tablet_count) {
+                table_plan.resize_decision = locator::resize_decision::merge();
+            }
+        };
+
+        for (auto&& [table, tmap] : _tm->tablets().all_tables()) {
+            const tablet_aware_replication_strategy* rs = nullptr;
+            schema_ptr s;
 
             // FIXME: the table or the replication_strategy might be missing in boost unit tests
             auto t = _db.get_tables_metadata().get_table_if_exists(table);
             if (t) {
+                s = t->schema();
                 const auto& erm = t->get_effective_replication_map();
-                if (const auto* rs = erm->get_replication_strategy().maybe_as_tablet_aware()) {
-                    size_desc.min_tablet_count = std::max<size_t>(size_desc.min_tablet_count,
-                            co_await rs->calculate_min_tablet_count(t->schema(), erm->get_token_metadata_ptr(),
-                                    size_desc.target_tablet_size, _initial_scale));
-                } else {
-                    auto msg = format("Table {}.{} has no tablet_aware_replication_strategy: uses_tablets={}", t->schema()->ks_name(), t->schema()->cf_name(), erm->get_replication_strategy().uses_tablets());
+                rs = erm->get_replication_strategy().maybe_as_tablet_aware();
+                if (!rs) {
+                    auto msg = format("Table {}.{} has no tablet_aware_replication_strategy: uses_tablets={}",
+                            t->schema()->ks_name(), t->schema()->cf_name(), erm->get_replication_strategy().uses_tablets());
                     if (!_test_mode) {
                         on_internal_error(lblogger, msg);
                     } else {
@@ -1111,8 +1121,51 @@ public:
                 on_internal_error(lblogger, format("Table {} does not exist", table));
             }
 
+            co_await process_table(table, s, rs, tmap->tablet_count());
+        }
+
+        co_return std::move(plan);
+    }
+
+    future<table_resize_plan> make_resize_plan(const migration_plan& plan) {
+        table_resize_plan resize_plan;
+
+        if (!_tm->tablets().balancing_enabled()) {
+            co_return std::move(resize_plan);
+        }
+
+        auto table_sizing_plan = co_await make_sizing_plan();
+
+        cluster_resize_load resize_load;
+
+        for (auto&& [table, tmap_] : _tm->tablets().all_tables()) {
+            auto& tmap = *tmap_;
+
+            table_sizing& table_plan = table_sizing_plan.tables[table];
+            if (!table_plan.avg_tablet_size) {
+                continue;
+            }
+
+            // shard presence of a table across the cluster
+            size_t shard_count = std::accumulate(tmap.tablets().begin(), tmap.tablets().end(), size_t(0),
+                [] (size_t shard_count, const locator::tablet_info& info) {
+                    return shard_count + info.replicas.size();
+                });
+
+            resize_decision new_resize_decision;
+            new_resize_decision.way = table_plan.resize_decision;
+
+            table_size_desc size_desc {
+                .avg_tablet_size = *table_plan.avg_tablet_size,
+                .resize_decision = tmap.resize_decision(),
+                .new_resize_decision = new_resize_decision,
+                .tablet_count = table_plan.current_tablet_count,
+                .shard_count = shard_count,
+            };
+
             resize_load.update(table, std::move(size_desc));
-            lblogger.info("Table {} with tablet_count={} has an average tablet size of {}", table, tmap.tablet_count(), avg_tablet_size);
+            lblogger.info("Table {} with tablet_count={} has an average tablet size of {}", table, tmap.tablet_count(),
+                    *table_plan.avg_tablet_size);
             co_await coroutine::maybe_yield();
         }
 
