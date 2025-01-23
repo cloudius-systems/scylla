@@ -2557,6 +2557,19 @@ mutation system_keyspace::make_size_estimates_mutation(const sstring& ks, std::v
     return m_to_apply;
 }
 
+future<std::vector<system_keyspace_view_name>> system_keyspace::load_all_views() {
+    static const sstring query = format("SELECT keyspace_name, view_name FROM {}.{}", db::schema_tables::v3::NAME, db::schema_tables::v3::VIEWS);
+    
+    std::vector<view_name> views;
+    co_await _qp.query_internal(query, [&] (const cql3::untyped_result_set_row& row) -> future<stop_iteration> {
+        auto ks_name = row.get_as<sstring>("keyspace_name");
+        auto view_name = row.get_as<sstring>("view_name");
+        views.emplace_back(ks_name, view_name);
+        co_return stop_iteration::no;
+    });
+    co_return views;
+}
+
 future<> system_keyspace::register_view_for_building(sstring ks_name, sstring view_name, const dht::token& token) {
     sstring req = format("INSERT INTO system.{} (keyspace_name, view_name, generation_number, cpu_id, first_token) VALUES (?, ?, ?, ?, ?)",
             v3::SCYLLA_VIEWS_BUILDS_IN_PROGRESS);

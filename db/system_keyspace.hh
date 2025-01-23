@@ -540,6 +540,8 @@ public:
      */
     static mutation make_size_estimates_mutation(const sstring& ks, std::vector<range_estimates> estimates);
 
+    future<std::vector<system_keyspace_view_name>> load_all_views();
+
     future<> register_view_for_building(sstring ks_name, sstring view_name, const dht::token& token);
     future<> update_view_build_progress(sstring ks_name, sstring view_name, const dht::token& token);
     future<> remove_view_build_progress(sstring ks_name, sstring view_name);
