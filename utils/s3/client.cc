@@ -193,17 +193,24 @@ future<semaphore_units<>> client::claim_memory(size_t size) {
         auto status = e.status();
 
         if (http::reply::classify_status(status) == http::reply::status_class::redirection || status == http::reply::status_type::not_found) {
-            throw storage_io_error {ENOENT, format("S3 object doesn't exist ({})", status)};
+            throw storage_io_error{ENOENT, format("S3 object doesn't exist ({})", status)};
         }
         if (status == http::reply::status_type::forbidden || status == http::reply::status_type::unauthorized) {
-            throw storage_io_error {EACCES, format("S3 access denied ({})", status)};
+            throw storage_io_error{EACCES, format("S3 access denied ({})", status)};
         }
 
-        throw storage_io_error {EIO, format("S3 request failed with ({})", status)};
+        throw storage_io_error{EIO, format("S3 request failed with ({})", status)};
     } catch (...) {
         auto e = std::current_exception();
-        throw storage_io_error {EIO, format("S3 error ({})", e)};
+        throw storage_io_error{EIO, format("S3 error ({})", e)};
     }
+}
+
+void client::io_stats::update(uint64_t len, std::chrono::duration<double> lat) {
+    ops++;
+    bytes += len;
+    duration += lat;
+    s3l.trace("STAT,{},{}", len, std::chrono::duration_cast<std::chrono::milliseconds>(lat).count());
 }
 
 client::group_client::group_client(std::unique_ptr<http::experimental::connection_factory> f, unsigned max_conn, const aws::retry_strategy& retry_strategy)
@@ -1164,7 +1171,7 @@ future<> client::upload_file(std::filesystem::path path,
     do_upload_file do_upload{shared_from_this(),
                              std::move(path),
                              std::move(object_name),
-                             {}, 0, up, as};
+                             {}, 50_MiB, up, as};
     co_await do_upload.upload();
 }
 

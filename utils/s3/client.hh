@@ -65,11 +65,7 @@ class client : public enable_shared_from_this<client> {
         uint64_t bytes = 0;
         std::chrono::duration<double> duration = std::chrono::duration<double>(0);
 
-        void update(uint64_t len, std::chrono::duration<double> lat) {
-            ops++;
-            bytes += len;
-            duration += lat;
-        }
+        void update(uint64_t len, std::chrono::duration<double> lat);
     };
     struct group_client {
         aws::retryable_http_client retryable_client;
