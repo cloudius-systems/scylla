@@ -12,6 +12,8 @@
 #undef SEASTAR_TESTING_MAIN
 #include <seastar/testing/test_case.hh>
 #include "test/lib/random_utils.hh"
+#include "service/topology_mutation.hh"
+#include "service/storage_service.hh"
 #include <fmt/ranges.h>
 #include <seastar/testing/thread_test_case.hh>
 #include "test/lib/cql_test_env.hh"
@@ -107,6 +109,40 @@ future<table_id> add_table(cql_test_env& e, sstring test_ks_name = "") {
                 .build();
     });
     co_return id;
+}
+
+static
+dht::token next_token() {
+    static int64_t v = 1;
+    return dht::token(v++);
+}
+
+// Adds a new node to topology via group0.
+static
+void add_node(cql_test_env& e, host_id id, inet_address ip, endpoint_dc_rack dc_rack, node_state state, unsigned shard_count) {
+    abort_source as;
+    auto& client = e.get_raft_group0_client();
+    auto guard = client.start_operation(as).get();
+    service::topology_mutation_builder builder(guard.write_timestamp());
+    std::unordered_set<dht::token> tokens;
+    tokens.insert(next_token());
+    builder.with_node(raft::server_id(id.uuid()))
+            .set("datacenter", dc_rack.dc)
+            .set("rack", dc_rack.rack)
+            .set("node_state", state)
+            .set("shard_count", (uint32_t)shard_count)
+            .set("cleanup_status", cleanup_status::clean)
+            .set("release_version", version::release())
+            .set("num_tokens", (uint32_t)1)
+            .set("tokens_string", "0")
+            .set("tokens", tokens)
+            .set("supported_features", std::set<sstring>())
+            .set("request_id", utils::UUID())
+            .set("ignore_msb", (uint32_t)0);
+    topology_change change({builder.build()});
+    group0_command g0_cmd = client.prepare_command(std::move(change), guard, format("adding node {} to topology", id));
+    testlog.info("Adding node {}/{} dc={} rack={} to topology", id, ip, dc_rack.dc, dc_rack.rack);
+    client.add_entry(std::move(g0_cmd), std::move(guard), as).get();
 }
 
 SEASTAR_TEST_CASE(test_tablet_metadata_persistence) {
@@ -2721,6 +2757,92 @@ SEASTAR_THREAD_TEST_CASE(test_load_balancing_with_random_load) {
         }
     }
   }).get();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_per_shard_goal_mixed_dc_rf) {
+    do_with_cql_env_thread([] (auto& e) {
+        auto per_shard_goal = e.local_db().get_config().tablets_per_shard_goal();
+
+        storage_service& ss = e.get_storage_service().local();
+        ss.set_tablet_balancing_enabled(false).get();
+
+        const int n_hosts = 6;
+
+        std::vector<host_id> hosts;
+        std::vector<inet_address> ips;
+        for (int i = 0; i < n_hosts; ++i) {
+            hosts.push_back(host_id(next_uuid()));
+            ips.push_back(inet_address(format("192.168.0.{}", i + 1)));
+        }
+
+        std::vector<endpoint_dc_rack> racks = {
+            endpoint_dc_rack{ "dc1", "rack-dc1-a" },
+            endpoint_dc_rack{ "dc2", "rack-dc2-a" }
+        };
+
+        add_node(e, hosts[0], ips[0], racks[0], node_state::normal, 2);
+        add_node(e, hosts[1], ips[1], racks[0], node_state::normal, 2);
+        add_node(e, hosts[2], ips[2], racks[0], node_state::normal, 2);
+
+        add_node(e, hosts[3], ips[3], racks[1], node_state::normal, 1);
+        add_node(e, hosts[4], ips[4], racks[1], node_state::normal, 1);
+
+        auto ks_name1 = "ks_dc1_rf3";
+        auto ks_name2 = "ks_dc2_rf2";
+
+        e.execute_cql(format("create keyspace {} with replication = "
+                             "{{'class': 'NetworkTopologyStrategy', 'dc1': 3}} "
+                             "and tablets = {{'enabled': true}}", ks_name1)).get();
+
+        e.execute_cql(format("create keyspace {} with replication = "
+                             "{{'class': 'NetworkTopologyStrategy', 'dc2': 2}} "
+                             "and tablets = {{'enabled': true}}", ks_name2)).get();
+
+        // table1 overflows per-shard goal in dc1, should be scaled down.
+        // wants 400 tablets (3 nodes * 2 shards * 200 tablets/shard / rf=3 = 400 tablets)
+        // which will be scaled down by a factor of 0.5 to achieve 100 tablets/shard, giving
+        // 200 tablets, scaled up to the nearest power of 2, which is 256.
+        e.execute_cql(fmt::format("CREATE TABLE {}.table1 (p1 text, r1 int, PRIMARY KEY (p1)) "
+                                  "WITH tablet_hints = {{'min_per_shard_tablet_count': 200}}", ks_name1)).get();
+        auto table1 = e.local_db().find_schema(ks_name1, "table1")->id();
+
+        // table2 has 64 tablets/shard in dc2, should not be scaled down.
+        e.execute_cql(fmt::format("CREATE TABLE {}.table2 (p1 text, r1 int, PRIMARY KEY (p1)) "
+                                  "WITH tablet_hints = {{'min_per_shard_tablet_count': 64}}", ks_name2)).get();
+        auto table2 = e.local_db().find_schema(ks_name2, "table2")->id();
+
+        semaphore sem(1);
+        shared_token_metadata stm([&sem] () noexcept { return get_units(sem, 1); }, locator::token_metadata::config{
+            locator::topology::config{
+                .this_endpoint = ips[0],
+                .this_host_id = hosts[0],
+                .local_dc_rack = racks[0]
+            }
+        });
+
+        stm.mutate_token_metadata([&] (token_metadata& tm) -> future<> {
+            tm = e.db().local().get_token_metadata_ptr()->clone_async().get();
+            tm.tablets().set_balancing_enabled(true);
+            return make_ready_future<>();
+        }).get();
+
+        rebalance_tablets(e.get_tablet_allocator().local(), stm);
+
+        {
+            auto tm = stm.get();
+            BOOST_REQUIRE_EQUAL(tm->tablets().get_tablet_map(table1).tablet_count(), 256);
+            BOOST_REQUIRE_EQUAL(tm->tablets().get_tablet_map(table2).tablet_count(), 64);
+
+            load_sketch load(tm);
+            load.populate().get();
+
+            for (auto h: hosts) {
+                auto l = load.get_shard_minmax(h);
+                testlog.info("Load on host {}: min={}, max={}", h, l.min(), l.max());
+                BOOST_REQUIRE_LE(l.max(), 2 * per_shard_goal);
+            }
+        }
+    }, tablet_cql_test_config()).get();
 }
 
 SEASTAR_TEST_CASE(test_tablet_id_and_range_side) {

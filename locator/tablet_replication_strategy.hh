@@ -50,6 +50,12 @@ public:
     /// otherwise, cur_tablets is a copy of the current tablet_map.
     /// Runs under group0 guard.
     virtual future<tablet_map> reallocate_tablets(schema_ptr, token_metadata_ptr, tablet_map cur_tablets) const = 0;
+
+    /// Returns desired replication factor in a given DC.
+    /// Note that individual tablets may lag behind desired replication factor in their
+    /// current replica list, as replication factor changes invole table rebuilding transitions
+    /// which are not instantenous.
+    virtual size_t get_replication_factor(const sstring& dc) const = 0;
 };
 
 } // namespace locator

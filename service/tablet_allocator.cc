@@ -665,8 +665,13 @@ private:
         return streaming_infos;
     }
 public:
-    load_balancer(replica::database& db, token_metadata_ptr tm, locator::load_stats_ptr table_load_stats, load_balancer_stats_manager& stats, uint64_t target_tablet_size, std::unordered_set<host_id> skiplist)
+    load_balancer(replica::database& db, token_metadata_ptr tm, locator::load_stats_ptr table_load_stats,
+            load_balancer_stats_manager& stats,
+            uint64_t target_tablet_size,
+            unsigned tablets_per_shard_goal,
+            std::unordered_set<host_id> skiplist)
         : _target_tablet_size(target_tablet_size)
+        , _tablets_per_shard_goal(tablets_per_shard_goal)
         , _db(db)
         , _tm(std::move(tm))
         , _table_load_stats(std::move(table_load_stats))
@@ -1055,11 +1060,13 @@ public:
     };
 
     future<sizing_plan> make_sizing_plan(schema_ptr new_table = nullptr, const tablet_aware_replication_strategy* new_rs = nullptr) {
+        std::unordered_map<table_id, const tablet_aware_replication_strategy*> rs_by_table;
         sizing_plan plan;
 
         auto process_table = [&] (table_id table, schema_ptr s, const tablet_aware_replication_strategy* rs, size_t tablet_count) -> future<> {
             table_sizing& table_plan = plan.tables[table];
             table_plan.current_tablet_count = tablet_count;
+            rs_by_table[table] = rs;
 
             size_t target_tablet_count = 1;
 
@@ -1087,14 +1094,6 @@ public:
                 // can only increase the count above it, but decreasing may go against the true target count
                 // if tablet_count_from_size would demand more tablets.
                 table_plan.target_tablet_count = std::max(target_tablet_count, table_plan.current_tablet_count);
-            }
-
-            table_plan.target_tablet_count_aligned = 1u << log2ceil(table_plan.target_tablet_count);
-
-            if (table_plan.target_tablet_count_aligned > table_plan.current_tablet_count) {
-                table_plan.resize_decision = locator::resize_decision::split();
-            } else if (table_plan.target_tablet_count_aligned < table_plan.current_tablet_count) {
-                table_plan.resize_decision = locator::resize_decision::merge();
             }
         };
 
@@ -1126,6 +1125,123 @@ public:
 
         if (new_table) {
             co_await process_table(new_table->id(), new_table, new_rs, 0);
+        }
+
+        // Below section ensures we respect the _tablets_per_shard_goal.
+        //
+        // It will scale down target_tablet_count for all tables so that
+        // the average number of tablets per shard in each DC does not exceed _tablets_per_shard_goal.
+        //
+        // The impact of table's tablet count on average per-shard tablet replica count
+        // is different in each DC because replication factors are different in each DC.
+        //
+        // The algorithm works like this:
+        // Compute average tablet replica count per-shard in each DC,
+        // determine if per-shard goal is exceeded in that DC,
+        // compute scale factor by which tablet count should be multiplied so that the goal
+        // is not exceeded in that DC.
+        // Take the smallest scale factor among all DCs, which ensures that no DC is overloaded.
+        //
+        // We align tablet counts to the nearest power of 2 post-scaling, which
+        // means that scaling may not be effective and in the worst case we may overshoot the goal by
+        // a factor of 2. This is acceptable since the goal is a soft limit and not a hard constraint.
+        // Scaling post-alignment would be problematic. If we scale down all tables fairly, we undershoot the goal
+        // by a factor of 2 in the worst case. If we choose a subset of tables to scale down by a factor of 2 then
+        // we have a problem of making sure that the choice is stable across scheduler invocations to avoid
+        // oscillations of decisions.
+
+        std::unordered_map<table_id, double> table_scaling;
+
+        std::unordered_map<sstring, unsigned> shards_per_dc;
+        _tm->get_topology().for_each_node([&] (const node& n) {
+            if (n.is_normal() && _tm->is_normal_token_owner(n.host_id())) {
+                shards_per_dc[n.dc_rack().dc] += n.get_shard_count();
+            }
+        });
+
+        for (auto&& [dc, shard_count] : shards_per_dc) {
+            double old_avg_tablets_per_shard = 0;
+            double avg_tablets_per_shard = 0;
+
+            for (auto&& [table, table_plan] : plan.tables) {
+                auto* rs = rs_by_table[table];
+                if (!rs) {
+                    continue;
+                }
+
+                auto rf = rs->get_replication_factor(dc);
+                auto get_avg_tablets_per_shard = [&] (size_t tablet_count) {
+                    return double(tablet_count) * rf / shard_count;
+                };
+
+                auto old_tablets_per_shard = get_avg_tablets_per_shard(table_plan.current_tablet_count);
+                old_avg_tablets_per_shard += old_tablets_per_shard;
+                lblogger.debug("old_avg_tablets_per_shard [dc={}, table={}]: {:.3f}", dc, table, old_tablets_per_shard);
+
+                auto tablets_per_shard = get_avg_tablets_per_shard(table_plan.target_tablet_count);
+                avg_tablets_per_shard += tablets_per_shard;
+                lblogger.debug("new_avg_tablets_per_shard [dc={}, table={}]: {:.3f}", dc, table, tablets_per_shard);
+            }
+
+            if (!new_table) {
+                bool overloaded = old_avg_tablets_per_shard > _tablets_per_shard_goal;
+                lblogger.info("avg_tablets_per_shard[dc={}]: {:.3f}{}", dc, old_avg_tablets_per_shard,
+                    overloaded ? " (overloaded!)" : "");
+            }
+
+            bool overloaded = avg_tablets_per_shard > _tablets_per_shard_goal;
+            lblogger.debug("new_avg_tablets_per_shard[dc={}]: {:.3f}{}", dc, avg_tablets_per_shard,
+                overloaded ? " (overloaded!)" : "");
+
+            if (overloaded) {
+                auto scale = _tablets_per_shard_goal / avg_tablets_per_shard;
+
+                for (auto&& [table, table_plan]: plan.tables) {
+                    auto *rs = rs_by_table[table];
+                    if (!rs) {
+                        continue;
+                    }
+
+                    auto rf = rs->get_replication_factor(dc);
+
+                    // If table has no replicas in this DC, scaling it won't help and is harmful to its distribution
+                    // in other DCs.
+                    if (rf) {
+                        if (table_scaling.contains(table)) {
+                            table_scaling[table] = std::min(table_scaling[table], scale);
+                        } else {
+                            table_scaling[table] = scale;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (auto&& [table, scale] : table_scaling) {
+            auto& table_plan = plan.tables[table];
+            auto new_count = std::max<size_t>(1, table_plan.target_tablet_count * scale);
+            lblogger.debug("Scaling down table {} by a factor of {:.3f}: {} => {}", table, scale, table_plan.target_tablet_count, new_count);
+            table_plan.target_tablet_count = new_count;
+        }
+
+        // Generate:
+        //   table_plan.target_tablet_count_aligned
+        //   table_plan.resize_decision
+
+        for (auto&& [table, table_plan] : plan.tables) {
+            table_plan.target_tablet_count_aligned = 1u << log2ceil(table_plan.target_tablet_count);
+
+            if (table_plan.target_tablet_count_aligned > table_plan.current_tablet_count) {
+                table_plan.resize_decision = locator::resize_decision::split();
+            } else if (table_plan.target_tablet_count_aligned < table_plan.current_tablet_count) {
+                table_plan.resize_decision = locator::resize_decision::merge();
+            }
+
+            lblogger.debug("Table {}, {} => {} ({}), resize: {}", table,
+                           table_plan.current_tablet_count,
+                           table_plan.target_tablet_count_aligned,
+                           table_plan.target_tablet_count,
+                           table_plan.resize_decision);
         }
 
         co_return std::move(plan);
@@ -2482,7 +2598,8 @@ public:
         auto shuffle = in_shuffle_mode();
 
         _stats.for_dc(dc).calls++;
-        lblogger.info("Examining DC {} (shuffle={}, balancing={})", dc, shuffle, _tm->tablets().balancing_enabled());
+        lblogger.info("Examining DC {} (shuffle={}, balancing={}, tablets_per_shard_goal={})",
+                dc, shuffle, _tm->tablets().balancing_enabled(), _tablets_per_shard_goal);
 
         const locator::topology& topo = _tm->get_topology();
 
