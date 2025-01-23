@@ -1084,6 +1084,35 @@ public:
         return tablet_count;
     }
 
+    std::tuple<schema_ptr, const tablet_aware_replication_strategy*> get_schema_and_rs(table_id table) {
+        const tablet_aware_replication_strategy* rs = nullptr;
+        schema_ptr s;
+
+        // FIXME: the table or the replication_strategy might be missing in boost unit tests
+        auto t = _db.get_tables_metadata().get_table_if_exists(table);
+        if (!t) {
+            if (!_test_mode) {
+                on_internal_error(lblogger, format("Table {} does not exist", table));
+            }
+            return {s, rs};
+        }
+
+        s = t->schema();
+        auto erm = t->get_effective_replication_map();
+        rs = erm->get_replication_strategy().maybe_as_tablet_aware();
+        if (!rs) {
+            auto msg = format("Table {}.{} has no tablet_aware_replication_strategy: uses_tablets={}",
+                    t->schema()->ks_name(), t->schema()->cf_name(), erm->get_replication_strategy().uses_tablets());
+            if (!_test_mode) {
+                on_internal_error(lblogger, msg);
+            } else {
+                lblogger.debug("{}", msg);
+            }
+        }
+
+        return {s, rs};
+    }
+
     future<sizing_plan> make_sizing_plan(schema_ptr new_table = nullptr, const tablet_aware_replication_strategy* new_rs = nullptr) {
         std::unordered_map<table_id, const tablet_aware_replication_strategy*> rs_by_table;
         sizing_plan plan;
@@ -1148,28 +1177,7 @@ public:
         };
 
         for (auto&& [table, tmap] : _tm->tablets().all_tables()) {
-            const tablet_aware_replication_strategy* rs = nullptr;
-            schema_ptr s;
-
-            // FIXME: the table or the replication_strategy might be missing in boost unit tests
-            auto t = _db.get_tables_metadata().get_table_if_exists(table);
-            if (t) {
-                s = t->schema();
-                const auto& erm = t->get_effective_replication_map();
-                rs = erm->get_replication_strategy().maybe_as_tablet_aware();
-                if (!rs) {
-                    auto msg = format("Table {}.{} has no tablet_aware_replication_strategy: uses_tablets={}",
-                            t->schema()->ks_name(), t->schema()->cf_name(), erm->get_replication_strategy().uses_tablets());
-                    if (!_test_mode) {
-                        on_internal_error(lblogger, msg);
-                    } else {
-                        lblogger.debug("{}", msg);
-                    }
-                }
-            } else if (!_test_mode) {
-                on_internal_error(lblogger, format("Table {} does not exist", table));
-            }
-
+            auto [s, rs] = get_schema_and_rs(table);
             process_table(table, s, rs, tmap->tablet_count());
             co_await coroutine::maybe_yield();
         }
