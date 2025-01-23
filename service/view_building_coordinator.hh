@@ -34,7 +34,7 @@ using view_tasks = std::map<view_building_target, dht::token_range_vector>;
 using base_tasks = std::map<view_name, view_tasks>;
 struct vbc_tasks : public std::map<table_id, base_tasks> {};
 
-future<> run_view_building_coordinator(abort_source& as, replica::database& db, raft_group0& group0, db::system_keyspace& sys_ks, const topology_state_machine& topo_sm);
+future<> run_view_building_coordinator(abort_source& as, replica::database& db, raft_group0& group0, db::system_keyspace& sys_ks, netw::messaging_service& messaging, const topology_state_machine& topo_sm);
 
 }
 
