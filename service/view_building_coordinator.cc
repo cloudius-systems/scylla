@@ -110,10 +110,18 @@ private:
     table_id get_base_id(const view_name& view_name) {
         return _db.find_schema(view_name.first, view_name.second)->view_info()->base_id();
     }
+    std::set<locator::host_id> get_active_hosts() {
+        std::set<locator::host_id> hosts;
+        for (auto& [target, _]: _rpc_handlers) {
+            hosts.insert(target.host);
+        }
+        return hosts;
+    }
 
     future<> build_view(vbc_state state);
     future<> send_task(view_building_target target, table_id base_id, dht::token_range range, std::vector<view_name> views);
     future<> mark_task_completed(view_building_target target, table_id base_id, dht::token_range range, std::vector<view_name> views);
+    future<> abort_work(locator::host_id host);
 };
 
 future<> view_building_coordinator::run() {
@@ -290,6 +298,10 @@ future<> view_building_coordinator::mark_task_completed(view_building_target tar
     co_await _group0.client().add_entry(std::move(cmd), std::move(guard), _as);
 }
 
+future<> view_building_coordinator::abort_work(locator::host_id host) {
+    return ser::view_rpc_verbs::send_abort_vbc_work(&_messaging, host);
+}
+
 std::set<view_name> view_building_coordinator::get_views_to_add(const vbc_state& state, const std::vector<view_name>& views, const std::vector<view_name>& built) {
     std::set<view_name> views_to_add;
     for (auto& view: views) {
@@ -345,6 +357,9 @@ future<> view_building_coordinator::remove_view(const view_name& view_name, grou
 
 future<> view_building_coordinator::stop() {
     _as.request_abort();
+    co_await coroutine::parallel_for_each(get_active_hosts(), [this] (auto host) -> future<> {
+        co_await abort_work(host);
+    });
     co_await coroutine::parallel_for_each(std::move(_rpc_handlers), [] (auto&& rpc_call) -> future<> {
         co_await std::move(rpc_call.second);
     });
