@@ -300,56 +300,6 @@ effective_replication_map_ptr network_topology_strategy::make_replication_map(ta
     return do_make_replication_map(table, shared_from_this(), std::move(tm), _rep_factor);
 }
 
-//
-// Try to use as many tablets initially, so that all shards in the current topology
-// are covered with at least `min_per_shard_tablet_count` tablets. In other words, the value is
-//
-//    initial_tablets = max(nr_shards_in(dc) / RF_in(dc) for dc in datacenters)
-//
-
-static future<unsigned> calculate_initial_tablets_from_topology(const schema& s, token_metadata_ptr tm, const std::unordered_map<sstring, size_t>& rf, double min_per_shard_tablet_count = 0) {
-    unsigned initial_tablets = std::numeric_limits<unsigned>::min();
-    std::unordered_map<sstring, unsigned> shards_per_dc_map;
-    tm->get_topology().for_each_node([&] (const node& n) {
-        if (n.is_normal() && tm->is_normal_token_owner(n.host_id())) {
-            shards_per_dc_map[n.dc_rack().dc] += n.get_shard_count();
-        }
-    });
-    min_per_shard_tablet_count = std::max(1.0, min_per_shard_tablet_count);
-    for (const auto& [dc, rf_in_dc] : rf) {
-        if (!rf_in_dc) {
-            continue;
-        }
-        unsigned shards_in_dc = shards_per_dc_map[dc];
-        unsigned tablets_in_dc = std::ceil((double)(min_per_shard_tablet_count * shards_in_dc) / rf_in_dc);
-        initial_tablets = std::max(initial_tablets, tablets_in_dc);
-    }
-    rslogger.debug("Estimated {} initial tablets for table {}.{}", initial_tablets, s.ks_name(), s.cf_name());
-    co_return initial_tablets;
-}
-
-future<size_t> network_topology_strategy::calculate_min_tablet_count(schema_ptr s, token_metadata_ptr tm, uint64_t target_tablet_size, std::optional<unsigned> initial_scale) const {
-    size_t tablet_count = get_initial_tablets();
-    const auto& tablet_hints = s->tablet_hints();
-    if (tablet_hints.min_tablet_count) {
-        tablet_count = std::max<size_t>(tablet_count, tablet_hints.min_tablet_count.value());
-    }
-    if (tablet_hints.expected_data_size_in_gb) {
-        tablet_count = std::max<size_t>(tablet_count, (tablet_hints.expected_data_size_in_gb.value() << 30) / target_tablet_size);
-    }
-
-    // If min_tablet_count is set, initial_scale should not be effective.
-    // This is for compatibility with the old "initial" tablet count option which suppresses automatic scaling.
-    auto min_per_shard_tablet_count = tablet_hints.min_per_shard_tablet_count.value_or(
-            tablet_hints.min_tablet_count ? 0 : initial_scale.value_or(1));
-    if (min_per_shard_tablet_count) {
-        tablet_count = std::max<size_t>(tablet_count, co_await calculate_initial_tablets_from_topology(*s, tm, _dc_rep_factor,
-                                                              min_per_shard_tablet_count));
-    }
-
-    co_return tablet_count;
-}
-
 future<tablet_map> network_topology_strategy::allocate_tablets_for_new_table(schema_ptr s, token_metadata_ptr tm, size_t tablet_count) const {
     co_return co_await reallocate_tablets(std::move(s), std::move(tm), tablet_map(tablet_count));
 }
