@@ -16,6 +16,7 @@ namespace s3 {
 struct endpoint_config {
     unsigned port;
     bool use_https;
+    std::optional<unsigned> max_connections;
 
     struct aws_config {
         // the access key of the credentials
