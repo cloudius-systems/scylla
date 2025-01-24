@@ -28,6 +28,7 @@
 #include "cdc/cdc_extension.hh"
 #include "tombstone_gc_extension.hh"
 #include "db/per_partition_rate_limit_extension.hh"
+#include "db/tablet_hints_extension.hh"
 #include "db/tags/extension.hh"
 #include "config.hh"
 #include "extensions.hh"
@@ -1372,6 +1373,7 @@ db::config::config(std::shared_ptr<db::extensions> exts)
     , _extensions(std::move(exts))
 {
     add_tombstone_gc_extension();
+    _extensions->add_schema_extension<db::tablet_hints_extension>(db::tablet_hints_extension::NAME);
 }
 
 db::config::config()
