@@ -1519,6 +1519,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
             }
         }
 
+        bool has_pending_resize_finalization = false;
         bool has_nodes_to_drain = false;
         if (!preempt) {
             auto plan = co_await _tablet_allocator.balance_tablets(get_token_metadata_ptr(), _tablet_load_stats, get_dead_nodes());
@@ -1526,6 +1527,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
             if (!drain || plan.has_nodes_to_drain()) {
                 co_await generate_migration_updates(updates, guard, plan);
             }
+            has_pending_resize_finalization = !plan.resize_plan().finalize_resize.empty();
         }
 
         // The updates have to be executed under the same guard which was used to read tablet metadata
@@ -1568,6 +1570,19 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                 co_await await_event();
             }
             co_return;
+        }
+
+        // generate updates for pending resize finalizations
+        if (has_pending_resize_finalization && !utils::get_local_injector().enter("tablet_split_finalization_postpone")) {
+            updates.clear();
+            guard = co_await generate_resize_finalization_updates(updates, std::move(guard));
+
+            // generate_resize_finalization_updates generates resize finalizations in addition to any
+            // pending transitions that might have been started when executing the global barrier.
+            if (!updates.empty()) {
+                co_await update_topology_state(std::move(guard), std::move(updates), format("Tablet migration"));
+                co_return;
+            }
         }
 
         if (drain) {
