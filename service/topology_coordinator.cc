@@ -1602,6 +1602,8 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
         auto tm = get_token_metadata_ptr();
         auto plan = co_await _tablet_allocator.balance_tablets(tm, _tablet_load_stats, get_dead_nodes());
 
+        // generate plan for transitions that might have started when acquiring the global barrier
+        co_await generate_migration_updates(updates, guard, plan);
         updates.reserve(updates.size() + plan.resize_plan().finalize_resize.size() * 2 + 1);
 
         for (auto& table_id : plan.resize_plan().finalize_resize) {
