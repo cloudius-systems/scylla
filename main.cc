@@ -186,6 +186,7 @@ template<>
 struct convert<::object_storage_endpoint_param> {
     static bool decode(const Node& node, ::object_storage_endpoint_param& ep) {
         ep.endpoint = node["name"].as<std::string>();
+        ep.config.is_default = node["is_default"].as<bool>(false);
         ep.config.port = node["port"].as<unsigned>();
         ep.config.use_https = node["https"].as<bool>(false);
         if (node["aws_region"] || std::getenv("AWS_DEFAULT_REGION")) {
@@ -257,8 +258,24 @@ static future<> read_object_storage_config(db::config& db_cfg) {
         }
 
         auto endpoints = section.second.as<std::vector<object_storage_endpoint_param>>();
+
+        uint32_t defaults = 0;
         for (auto&& ep : endpoints) {
+            defaults += ep.config.is_default;
             cfg[ep.endpoint] = std::move(ep.config);
+        }
+
+        // Patch up the config to have a default endpoint if none is specified
+        if (endpoints.size() == 1) {
+            cfg[endpoints[0].endpoint].is_default = true;
+        }
+        if (!defaults && endpoints.size() > 1) {
+            co_await coroutine::return_exception(
+                std::runtime_error("While parsing object_storage config: no default endpoint found."));
+        }
+        if (defaults > 1) {
+            co_await coroutine::return_exception(
+                std::runtime_error("While parsing object_storage config: multiple default endpoints found."));
         }
     }
 

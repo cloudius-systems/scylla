@@ -256,3 +256,17 @@ async def test_object_storage_config(manager: ManagerClient, tmpdir, s3_server):
     print('Scylla fails to start with an empty object storage config')
     Path(obj_cfg).touch()
     server = await manager.server_add(config=cfg, expected_error='a minimum of one endpoint is required')
+
+    print('Scylla fails to start when multiple endpoints are specified, but none is marked default')
+    MinioServer.create_conf_file(s3_server.address, s3_server.port, 'bad_key', 'bad_secret', 'bad_region', obj_cfg)
+    MinioServer.append_endpoint_to_conf(s3_server.address, s3_server.port, 'worse_region', obj_cfg, default=False)
+    server = await manager.server_add(config=cfg, expected_error='no default endpoint found')
+
+    print('Scylla fails to start when multiple default endpoints are specified')
+    MinioServer.append_endpoint_to_conf(s3_server.address, s3_server.port, 'worse_region', obj_cfg, default=True)
+    MinioServer.append_endpoint_to_conf('localhost', s3_server.port, 'worse_region', obj_cfg, default=True)
+    server = await manager.server_add(config=cfg, expected_error='multiple default endpoints found')
+
+    print('Scylla assumes the only endpoint specified is the default one')
+    MinioServer.create_conf_file(s3_server.address, s3_server.port, 'bad_key', 'bad_secret', 'region', obj_cfg)
+    server = await manager.server_add(config=cfg)
