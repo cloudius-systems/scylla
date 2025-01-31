@@ -162,6 +162,10 @@ future<> password_authenticator::start() {
                         return;
                     }
                 }
+                while (utils::get_local_injector().enter("password_authenticator_start_pause")) {
+                    plogger.info("Pausing before create_default_if_missing");
+                    seastar::sleep(100ms).get();
+                }
                 create_default_if_missing().get();
             });
         });
