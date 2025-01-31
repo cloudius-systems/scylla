@@ -1554,7 +1554,15 @@ database::query(schema_ptr s, const query::read_command& cmd, query::result_opti
             querier_opt->permit().set_trace_state(trace_state);
             f = co_await coroutine::as_future(semaphore.with_ready_permit(querier_opt->permit(), read_func));
         } else {
+<<<<<<< HEAD
             f = co_await coroutine::as_future(semaphore.with_permit(s, "data-query", cf.estimate_read_memory_cost(), timeout, trace_state, read_func));
+||||||| parent of f2d5819645 (reader_concurrency_semaphore: with_permit(): proper clean-up after queue overload)
+            f = co_await coroutine::as_future(semaphore.with_permit(query_schema, "data-query", cf.estimate_read_memory_cost(), timeout, trace_state, read_func));
+=======
+            reader_permit_opt permit_holder;
+            f = co_await coroutine::as_future(semaphore.with_permit(query_schema, "data-query", cf.estimate_read_memory_cost(), timeout,
+                        trace_state, permit_holder, read_func));
+>>>>>>> f2d5819645 (reader_concurrency_semaphore: with_permit(): proper clean-up after queue overload)
         }
 
         if (!f.failed()) {
@@ -1621,7 +1629,15 @@ database::query_mutations(schema_ptr s, const query::read_command& cmd, const dh
             querier_opt->permit().set_trace_state(trace_state);
             f = co_await coroutine::as_future(semaphore.with_ready_permit(querier_opt->permit(), read_func));
         } else {
+<<<<<<< HEAD
             f = co_await coroutine::as_future(semaphore.with_permit(s, "mutation-query", cf.estimate_read_memory_cost(), timeout, trace_state, read_func));
+||||||| parent of f2d5819645 (reader_concurrency_semaphore: with_permit(): proper clean-up after queue overload)
+            f = co_await coroutine::as_future(semaphore.with_permit(query_schema, "mutation-query", cf.estimate_read_memory_cost(), timeout, trace_state, read_func));
+=======
+            reader_permit_opt permit_holder;
+            f = co_await coroutine::as_future(semaphore.with_permit(query_schema, "mutation-query", cf.estimate_read_memory_cost(), timeout,
+                        trace_state, permit_holder, read_func));
+>>>>>>> f2d5819645 (reader_concurrency_semaphore: with_permit(): proper clean-up after queue overload)
         }
 
         if (!f.failed()) {
