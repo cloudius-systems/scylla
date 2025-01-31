@@ -1164,16 +1164,20 @@ locator::tablet_task_info locator::tablet_task_info::make_user_repair_request(ss
 std::unordered_set<locator::host_id> locator::tablet_task_info::get_repair_hosts_filter() const {
     std::unordered_set<locator::host_id> ret;
     std::unordered_set<sstring> hosts;
-    boost::split(hosts, repair_hosts_filter, boost::algorithm::is_any_of(","));
-    for (auto& h : hosts) {
-        ret.emplace(locator::host_id(utils::UUID(h)));
+    if (!repair_hosts_filter.empty()) {
+        boost::split(hosts, repair_hosts_filter, boost::algorithm::is_any_of(","));
+        for (auto& h : hosts) {
+            ret.emplace(locator::host_id(utils::UUID(h)));
+        }
     }
     return ret;
 }
 
 std::unordered_set<sstring> locator::tablet_task_info::get_repair_dcs_filter() const {
     std::unordered_set<sstring> ret;
-    boost::split(ret, repair_dcs_filter, boost::algorithm::is_any_of(","));
+    if (!repair_dcs_filter.empty()) {
+        boost::split(ret, repair_dcs_filter, boost::algorithm::is_any_of(","));
+    }
     return ret;
 }
 

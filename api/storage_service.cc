@@ -1701,12 +1701,14 @@ rest_repair_tablet(http_context& ctx, sharded<service::storage_service>& ss, std
         auto dcs = req->get_query_param("dcs_filter");
 
         std::unordered_set<sstring> hosts_vec;
-        boost::split(hosts_vec, hosts, boost::algorithm::is_any_of(","));
-        for (auto& h : hosts_vec) {
-            try {
-                locator::host_id(utils::UUID(h));
-            } catch (...) {
-                throw httpd::bad_param_exception(fmt::format("Wrong host_id format {}", h));
+        if (!hosts.empty()) {
+            boost::split(hosts_vec, hosts, boost::algorithm::is_any_of(","));
+            for (auto& h : hosts_vec) {
+                try {
+                    locator::host_id(utils::UUID(h));
+                } catch (...) {
+                    throw httpd::bad_param_exception(fmt::format("Wrong host_id format {}", h));
+                }
             }
         }
         auto res = co_await ss.local().add_repair_tablet_request(table_id, tokens_variant, hosts, dcs);
