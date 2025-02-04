@@ -633,13 +633,7 @@ resize_decision::resize_decision(sstring decision, uint64_t seq_number)
 }
 
 sstring resize_decision::type_name() const {
-    static const std::array<sstring, 3> index_to_string = {
-        "none",
-        "split",
-        "merge",
-    };
-    static_assert(std::variant_size_v<decltype(way)> == index_to_string.size());
-    return index_to_string[way.index()];
+    return fmt::format("{}", way);
 }
 
 resize_decision::seq_number_t resize_decision::next_sequence_number() const {
@@ -648,10 +642,6 @@ resize_decision::seq_number_t resize_decision::next_sequence_number() const {
     // for it to happen, about 21x the age of the universe, or ~11x according to the new
     // prediction after james webb.
     return (sequence_number == std::numeric_limits<seq_number_t>::max()) ? 0 : sequence_number + 1;
-}
-
-bool resize_decision::initial_decision() const {
-    return sequence_number == 0;
 }
 
 table_load_stats& table_load_stats::operator+=(const table_load_stats& s) noexcept {
@@ -1038,6 +1028,17 @@ void tablet_metadata_guard::subscribe() {
     });
 }
 
+}
+
+auto fmt::formatter<locator::resize_decision_way>::format(const locator::resize_decision_way& way, fmt::format_context& ctx) const
+        -> decltype(ctx.out()) {
+    static const std::array<sstring, 3> index_to_string = {
+        "none",
+        "split",
+        "merge",
+    };
+    static_assert(std::variant_size_v<locator::resize_decision_way> == index_to_string.size());
+    return fmt::format_to(ctx.out(), "{}", index_to_string[way.index()]);
 }
 
 auto fmt::formatter<locator::global_tablet_id>::format(const locator::global_tablet_id& id, fmt::format_context& ctx) const

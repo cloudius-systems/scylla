@@ -98,6 +98,7 @@
 #include "tombstone_gc_extension.hh"
 #include "db/tags/extension.hh"
 #include "db/paxos_grace_seconds_extension.hh"
+#include "db/tablet_hints_extension.hh"
 #include "service/qos/standard_service_level_distributed_data_accessor.hh"
 #include "service/storage_proxy.hh"
 #include "service/mapreduce_service.hh"
@@ -1715,6 +1716,9 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             tsm.start().get();
             auto stop_tsm = defer_verbose_shutdown("topology_state_machine", [&tsm] {
                 tsm.stop().get();
+            });
+            auto tablets_per_shard_goal_observer = cfg->tablets_per_shard_goal.observe([&tsm] (unsigned goal) {
+                tsm.local().event.broadcast();
             });
 
             auto compression_dict_updated_callback = [] () -> future<> {
